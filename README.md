@@ -66,7 +66,7 @@ This behavior is controlled by the `-cardinalityMetrics.exposeAt` flag:
 
 All metrics include `interval`, `group_by_keys`, and `group_by_values` labels. Extra labels from the `labels` config field are inserted between `interval` and `group_by_keys` (sorted alphabetically).
 
-**Without grouping** (`group_by_keys` is `__global` and `group_by_values` is not set):
+**Without grouping** (`group_by_keys` is `__global__` and `group_by_values` is not set):
 ```
 cardinality_estimate{interval="1h0m0s",group_by_keys="__global__"} 142300
 ```
