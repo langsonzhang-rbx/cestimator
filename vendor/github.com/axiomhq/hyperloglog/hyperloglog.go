@@ -185,9 +185,9 @@ func (sk *Sketch) Estimate() uint64 {
 
 var compressedListPools = newCompressedListPools()
 
-func newCompressedListPools() [5]*sync.Pool {
-	pools := [5]*sync.Pool{}
-	for i := 0; i < 5; i++ {
+func newCompressedListPools() [8]*sync.Pool {
+	pools := [8]*sync.Pool{}
+	for i := 0; i < len(pools); i++ {
 		pools[i] = &sync.Pool{}
 	}
 	return pools
@@ -204,9 +204,15 @@ func getCompressedList(requestedCapacity int) *compressedList {
 		pool = compressedListPools[2]
 	} else if capacity = 2048; requestedCapacity < capacity {
 		pool = compressedListPools[3]
+	} else if capacity = 4096; requestedCapacity < capacity {
+		pool = compressedListPools[4]
+	} else if capacity = 8196; requestedCapacity < capacity {
+		pool = compressedListPools[5]
+	} else if capacity = 16384; requestedCapacity < capacity {
+		pool = compressedListPools[6]
 	} else {
 		capacity = requestedCapacity
-		pool = compressedListPools[4]
+		pool = compressedListPools[7]
 	}
 
 	c := pool.Get()
@@ -231,8 +237,14 @@ func putCompressedList(c *compressedList) {
 		compressedListPools[2].Put(c)
 	} else if capacity < 2048 {
 		compressedListPools[3].Put(c)
-	} else {
+	} else if capacity < 4096 {
 		compressedListPools[4].Put(c)
+	} else if capacity < 8196 {
+		compressedListPools[5].Put(c)
+	} else if capacity < 16384 {
+		compressedListPools[6].Put(c)
+	} else {
+		compressedListPools[7].Put(c)
 	}
 }
 
