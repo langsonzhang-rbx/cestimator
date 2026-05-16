@@ -212,10 +212,10 @@ func (e *estimator) reset() {
 }
 
 func (e *estimator) writeMetrics(w io.Writer) {
-	formatBuf := make([]byte, 0, 1024)
 	eb0 := e.buckets[0]
 
 	if len(e.groupBy) == 0 {
+		formatBuf := make([]byte, 0, 1024)
 		resSK := eb0.newSketch()
 		for _, eb := range e.buckets {
 			eb.writeNoGroupMetric(resSK)
@@ -229,14 +229,16 @@ func (e *estimator) writeMetrics(w io.Writer) {
 		return
 	}
 
-	groupMetricPrefix := formatBuf[:0]
-	groupMetricPrefix = append(groupMetricPrefix, eb0.metricPrefix...)
-	groupMetricPrefix = append(groupMetricPrefix, `,group_by_keys="`...)
-	groupMetricPrefix = append(groupMetricPrefix, eb0.groupByKeysLabel...)
-	groupMetricPrefix = append(groupMetricPrefix, `",group_by_values=`...)
+	formatBuf := make([]byte, 0, 16384)
+	formatBuf = append(formatBuf, eb0.metricPrefix...)
+	formatBuf = append(formatBuf, `,group_by_keys="`...)
+	formatBuf = append(formatBuf, eb0.groupByKeysLabel...)
+	formatBuf = append(formatBuf, `",group_by_values=`...)
 
+	prefixLen := len(formatBuf)
+	resSK := eb0.newSketch()
 	for _, eb := range e.buckets {
-		eb.writeGroupMetrics(w, groupMetricPrefix)
+		formatBuf = eb.writeGroupMetrics(w, resSK, formatBuf[:prefixLen])
 	}
 
 	groupSize := e.groupSize.Load()
@@ -406,16 +408,15 @@ func (eb *estimatorBucket) writeNoGroupMetric(res *hyperloglog.Sketch) {
 	return
 }
 
-func (eb *estimatorBucket) writeGroupMetrics(w io.Writer, groupMetricPrefix []byte) {
+func (eb *estimatorBucket) writeGroupMetrics(w io.Writer, res *hyperloglog.Sketch, formatBuf []byte) []byte {
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
 
-	prefixLen := len(groupMetricPrefix)
+	prefixLen := len(formatBuf)
 
-	res := eb.newSketch()
 	for valuesKey, gsk := range eb.groups {
 		res.Reset()
-		formatBuf := groupMetricPrefix[:prefixLen]
+		formatBuf = formatBuf[:prefixLen]
 
 		formatBuf = append(formatBuf, gsk.groupValueLabels...)
 
@@ -432,7 +433,7 @@ func (eb *estimatorBucket) writeGroupMetrics(w io.Writer, groupMetricPrefix []by
 		}
 
 		res.Reset()
-		formatBuf := groupMetricPrefix[:prefixLen]
+		formatBuf = formatBuf[:prefixLen]
 
 		gsk := eb.prevGroups[valuesKey]
 		formatBuf = append(formatBuf, gsk.groupValueLabels...)
@@ -442,6 +443,8 @@ func (eb *estimatorBucket) writeGroupMetrics(w io.Writer, groupMetricPrefix []by
 		formatBuf = append(formatBuf, "\n"...)
 		w.Write(formatBuf)
 	}
+
+	return formatBuf[:prefixLen]
 }
 
 func (eb *estimatorBucket) ensureKeySet(res map[string]*hyperloglog.Sketch, key string) {
