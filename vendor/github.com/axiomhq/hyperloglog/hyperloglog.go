@@ -56,7 +56,7 @@ func NewSketch(precision uint8, sparse bool) (*Sketch, error) {
 	}
 	if sparse {
 		s.tmpSet = makeSet(0)
-		s.sparseList = newCompressedList(0)
+		s.sparseList = getCompressedList(0)
 	} else {
 		s.regs = make([]uint8, m)
 	}
@@ -75,9 +75,12 @@ func (sk *Sketch) Clone() *Sketch {
 }
 
 func (sk *Sketch) Reset() {
-	sk.tmpSet.reset()
-	sk.sparseList.reset()
-	
+	if sk.sparse() {
+		sk.tmpSet.reset()
+		sk.sparseList.reset()
+		return
+	}
+
 	clear(sk.regs)
 }
 
@@ -149,6 +152,7 @@ func (sk *Sketch) toNormal() {
 	}
 
 	sk.tmpSet = nilSet
+	putCompressedList(sk.sparseList)
 	sk.sparseList = nil
 }
 
@@ -179,20 +183,57 @@ func (sk *Sketch) Estimate() uint64 {
 	return uint64(est + 0.5)
 }
 
-var compressedListPool = sync.Pool{}
+var compressedListPools = newCompressedListPools()
 
-func getCompressedList(capacity int) *compressedList {
-	c := compressedListPool.Get()
+func newCompressedListPools() [5]*sync.Pool {
+	pools := [5]*sync.Pool{}
+	for i := 0; i < 5; i++ {
+		pools[i] = &sync.Pool{}
+	}
+	return pools
+}
+
+func getCompressedList(requestedCapacity int) *compressedList {
+	var pool *sync.Pool
+	var capacity int
+	if capacity = 256; requestedCapacity < capacity {
+		pool = compressedListPools[0]
+	} else if capacity = 512; requestedCapacity < capacity {
+		pool = compressedListPools[1]
+	} else if capacity = 1024; requestedCapacity < capacity {
+		pool = compressedListPools[2]
+	} else if capacity = 2048; requestedCapacity < capacity {
+		pool = compressedListPools[3]
+	} else {
+		capacity = requestedCapacity
+		pool = compressedListPools[4]
+	}
+
+	c := pool.Get()
 	if c == nil {
 		return newCompressedList(capacity)
 	}
 
-	return c.(*compressedList)
+	c1 := c.(*compressedList)
+	c1.b = slices.Grow(c1.b, capacity)
+	return c1
 }
 
 func putCompressedList(c *compressedList) {
 	c.reset()
-	compressedListPool.Put(c)
+	capacity := cap(c.b)
+
+	if capacity <= 256 {
+		compressedListPools[0].Put(c)
+	} else if capacity <= 512 {
+		compressedListPools[1].Put(c)
+	} else if capacity <= 1024 {
+		compressedListPools[2].Put(c)
+	} else if capacity <= 2048 {
+		compressedListPools[3].Put(c)
+	} else {
+		compressedListPools[4].Put(c)
+	}
 }
 
 func (sk *Sketch) mergeSparse() {
