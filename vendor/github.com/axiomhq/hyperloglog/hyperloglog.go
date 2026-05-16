@@ -211,11 +211,11 @@ func getCompressedList(requestedCapacity int) *compressedList {
 
 	c := pool.Get()
 	if c == nil {
-		return newCompressedList(capacity)
+		return newCompressedList(capacity - 1)
 	}
 
 	c1 := c.(*compressedList)
-	c1.b = slices.Grow(c1.b, capacity)
+	c1.b = slices.Grow(c1.b, capacity-1)
 	return c1
 }
 
@@ -223,13 +223,13 @@ func putCompressedList(c *compressedList) {
 	c.reset()
 	capacity := cap(c.b)
 
-	if capacity <= 256 {
+	if capacity < 256 {
 		compressedListPools[0].Put(c)
-	} else if capacity <= 512 {
+	} else if capacity < 512 {
 		compressedListPools[1].Put(c)
-	} else if capacity <= 1024 {
+	} else if capacity < 1024 {
 		compressedListPools[2].Put(c)
-	} else if capacity <= 2048 {
+	} else if capacity < 2048 {
 		compressedListPools[3].Put(c)
 	} else {
 		compressedListPools[4].Put(c)
