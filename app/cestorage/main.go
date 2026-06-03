@@ -17,11 +17,13 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/pushmetrics"
 	"github.com/VictoriaMetrics/metrics"
 	"github.com/makasim/cestimator/app/cestorage/protoparser"
+	"github.com/valyala/fastrand"
 )
 
 var (
 	httpListenAddrs = flagutil.NewArrayString("httpListenAddr", "TCP address to listen for incoming HTTP requests")
 	configPath      = flag.String("config", "config.yaml", "Path to YAML configuration file")
+	sampleRate      = flag.Int("sampleRate", 100, "The percentage of write requests to be processed by cestorage; must be in the range [1, 100]")
 
 	prometheusWriteRequests = metrics.NewCounter(`cestorage_http_requests_total{path="/api/v1/write", protocol="promremotewrite"}`)
 )
@@ -31,6 +33,10 @@ func main() {
 	envflag.Parse()
 	buildinfo.Init()
 	logger.Init()
+
+	if *sampleRate < 1 || *sampleRate > 100 {
+		logger.Fatalf("sampleRate must be in the range [1, 100], got %d", *sampleRate)
+	}
 
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
@@ -83,6 +89,10 @@ func main() {
 		path, _ := strings.CutPrefix(r.URL.Path, `/cardinality`)
 		switch path {
 		case "/api/v1/write":
+			if int(fastrand.Uint32n(100)) >= *sampleRate {
+				w.WriteHeader(http.StatusNoContent)
+				return true
+			}
 			prometheusWriteRequests.Inc()
 			err := protoparser.Parse(r.Body, groupLabels, func(tss []protoparser.TimeSerie) {
 				for _, e := range estimators {
