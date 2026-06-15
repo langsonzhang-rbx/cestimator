@@ -506,3 +506,84 @@ func mustNewSketch(precision uint8, sparse bool) *hyperloglog.Sketch {
 func hash(v []byte) uint64 {
 	return metro.Hash64(v, 1337)
 }
+
+type estimatorMerge struct {
+	sketches map[string]*hyperloglog.Sketch
+}
+
+func (em *estimatorMerge) fromEstimatorBucket(estimator *estimator, bucket int) *estimatorMerge {
+	if bucket < 0 || bucket >= len(estimator.buckets) {
+		panic(fmt.Sprintf("BUG: bucket is out of range, bucket=%d, buckets_num=%d", bucket, len(estimator.buckets)))
+	}
+	if len(estimator.groupBy) == 0 {
+		panic("BUG: do not use this function for estimator with empty groupBy")
+	}
+
+	eb0 := estimator.buckets[0]
+
+	// TODO: refactor to avoid duplicate code in estimator.writeMetrics()
+	formatBuf := make([]byte, 0, 16384)
+	formatBuf = append(formatBuf, eb0.metricPrefix...)
+	formatBuf = append(formatBuf, `,group_by_keys="`...)
+	formatBuf = append(formatBuf, eb0.groupByKeysLabel...)
+	formatBuf = append(formatBuf, `",group_by_values=`...)
+
+	prefixLen := len(formatBuf)
+	resSK := eb0.newSketch()
+
+	eb := estimator.buckets[bucket]
+	for valuesKey, gsk := range eb.groups {
+		formatBuf = formatBuf[:prefixLen]
+
+		formatBuf = append(formatBuf, gsk.groupValueLabels...)
+
+		eb.mergeSketches(gsk.Sketch, eb.prevGroups[valuesKey].Sketch, resSK)
+
+		em.sketches[string(formatBuf)] = resSK.Clone()
+	}
+
+	return em
+}
+
+func (em *estimatorMerge) fromGlobalEstimator(estimator *estimator) *estimatorMerge {
+	if len(estimator.groupBy) != 0 {
+		panic("BUG: do not use this function for estimator with non-empty groupBy")
+	}
+
+	eb0 := estimator.buckets[0]
+
+	// TODO: refactor to avoid duplicate code in estimator.writeMetrics()
+	formatBuf := make([]byte, 0, 1024)
+	resSK := eb0.newSketch()
+	for _, eb := range estimator.buckets {
+		eb.writeNoGroupMetric(resSK)
+	}
+
+	formatBuf = append(formatBuf, eb0.metricPrefix...)
+	formatBuf = append(formatBuf, `,group_by_keys="__global__"} `...)
+
+	em.sketches[string(formatBuf)] = resSK.Clone()
+
+	return em
+}
+
+func (em *estimatorMerge) merge(other *estimatorMerge) {
+	for name, sketch := range other.sketches {
+		if existing, ok := em.sketches[name]; ok {
+			existing.Merge(sketch)
+		} else {
+			em.sketches[name] = sketch.Clone()
+		}
+	}
+}
+
+func (em *estimatorMerge) writeMetrics(w io.Writer) {
+	formatBuf := make([]byte, 0, 1024)
+	for name, sketch := range em.sketches {
+		formatBuf = formatBuf[:0]
+		formatBuf = append(formatBuf, name...)
+		formatBuf = strconv.AppendUint(formatBuf, sketch.Estimate(), 10)
+		formatBuf = append(formatBuf, "\n"...)
+		w.Write(formatBuf)
+	}
+}

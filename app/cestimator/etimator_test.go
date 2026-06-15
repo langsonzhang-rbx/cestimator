@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/axiomhq/hyperloglog"
 	"github.com/makasim/cestimator/app/cestimator/protoparser"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestGlobalEstimate(t *testing.T) {
@@ -592,4 +594,54 @@ cardinality_estimate{interval="10m0s",group_by_keys="foo",group_by_values="a0",b
 cardinality_estimate{interval="10m0s",group_by_keys="foo",group_by_values="a1",by_foo="a1"} 1
 cardinality_estimate{interval="10m0s",group_by_keys="foo",group_by_values="a2",by_foo="a2"} 1`,
 	)
+}
+
+func TestEstimatorMerge(t *testing.T) {
+
+	t.Run("global", func(t *testing.T) {
+		estimator, err := newEstimator(EstimatorConfig{Interval: time.Hour})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// insert 1000 tss
+		tss := []protoparser.TimeSerie{}
+		for i := 0; i < 1000; i++ {
+			tss = append(tss, protoparser.TimeSerie{Fingerprint: hash([]byte(fmt.Sprintf("%d", i)))})
+		}
+		estimator.insertMany(tss)
+
+		merge := (&estimatorMerge{sketches: make(map[string]*hyperloglog.Sketch)}).fromGlobalEstimator(estimator)
+
+		t.Run("expect", func(t *testing.T) {
+			b := bytes.NewBuffer(nil)
+			merge.writeMetrics(b)
+
+			assert.Equal(t, `cardinality_estimate{interval="1h0m0s",group_by_keys="__global__"} 1000`+"\n", b.String())
+		})
+
+		t.Run("mergeWithGlobal", func(t *testing.T) {
+			estimator2, err := newEstimator(EstimatorConfig{Interval: time.Hour})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// insert 1500 tss, 500 of which do not overlap with the first estimator
+			tss2 := []protoparser.TimeSerie{}
+			for i := 0; i < 1501; i++ {
+				tss2 = append(tss2, protoparser.TimeSerie{Fingerprint: hash([]byte(fmt.Sprintf("%d", i)))})
+			}
+			estimator2.insertMany(tss2)
+
+			merge2 := (&estimatorMerge{sketches: make(map[string]*hyperloglog.Sketch)}).fromGlobalEstimator(estimator2)
+
+			merge.merge(merge2)
+
+			b := bytes.NewBuffer(nil)
+			merge.writeMetrics(b)
+
+			assert.Equal(t, `cardinality_estimate{interval="1h0m0s",group_by_keys="__global__"} 1500`+"\n", b.String())
+		})
+	})
+
 }
