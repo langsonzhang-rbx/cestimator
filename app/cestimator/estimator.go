@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/gob"
 	"fmt"
 	"io"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -490,28 +492,62 @@ type groupSketch struct {
 	*hyperloglog.Sketch
 }
 
-func mustNewGroupRejectSketch() *hyperloglog.Sketch {
-	return mustNewSketch(10, true)
+type EstimatorMerge struct {
+	Sketches map[string]*hyperloglog.Sketch
 }
 
-func mustNewSketch(precision uint8, sparse bool) *hyperloglog.Sketch {
-	sk, err := hyperloglog.NewSketch(precision, sparse)
-	if err != nil {
-		panic(fmt.Sprintf("cannot create HLL sketch with precision=%d and sparse=%v: %s", precision, sparse, err))
+// estimatorMergeStreamHandler writes all sketches from all estimators to the response as a stream of gob-encoded EstimatorMerge objects.
+func EstimatorMergeWriteStreamHandler(estimators []*estimator, w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Transfer-Encoding", "chunked")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		panic("FATAL: ResponseWriter does not support flushing")
 	}
 
-	return sk
+	encoder := gob.NewEncoder(w)
+	streamGob := func(em *EstimatorMerge) {
+		if err := encoder.Encode(em); err != nil {
+			logger.Panicf("BUG: Encoding error: %v\n", err)
+		}
+		flusher.Flush()
+	}
+
+	em := &EstimatorMerge{
+		Sketches: make(map[string]*hyperloglog.Sketch),
+	}
+	for _, e := range estimators {
+		if len(e.groupBy) == 0 {
+			clear(em.Sketches)
+			em.fromGlobalEstimator(e)
+			streamGob(em)
+		} else {
+			for i := range e.buckets {
+				clear(em.Sketches)
+				em.fromEstimatorBucket(e, i)
+				streamGob(em)
+			}
+		}
+	}
 }
 
-func hash(v []byte) uint64 {
-	return metro.Hash64(v, 1337)
+func EstimatorMergeReadStreamHandler(em *EstimatorMerge, resp *http.Response) {
+	defer resp.Body.Close()
+	decoder := gob.NewDecoder(resp.Body)
+	for {
+		var receivedEm EstimatorMerge
+		if err := decoder.Decode(&receivedEm); err != nil {
+			if err == io.EOF {
+				break
+			}
+			logger.Panicf("BUG: Decoding error: %v\n", err)
+		}
+		em.merge(&receivedEm)
+	}
 }
 
-type estimatorMerge struct {
-	sketches map[string]*hyperloglog.Sketch
-}
-
-func (em *estimatorMerge) fromEstimatorBucket(estimator *estimator, bucket int) *estimatorMerge {
+func (em *EstimatorMerge) fromEstimatorBucket(estimator *estimator, bucket int) *EstimatorMerge {
 	if bucket < 0 || bucket >= len(estimator.buckets) {
 		panic(fmt.Sprintf("BUG: bucket is out of range, bucket=%d, buckets_num=%d", bucket, len(estimator.buckets)))
 	}
@@ -539,13 +575,13 @@ func (em *estimatorMerge) fromEstimatorBucket(estimator *estimator, bucket int) 
 
 		eb.mergeSketches(gsk.Sketch, eb.prevGroups[valuesKey].Sketch, resSK)
 
-		em.sketches[string(formatBuf)] = resSK.Clone()
+		em.Sketches[string(formatBuf)] = resSK.Clone()
 	}
 
 	return em
 }
 
-func (em *estimatorMerge) fromGlobalEstimator(estimator *estimator) *estimatorMerge {
+func (em *EstimatorMerge) fromGlobalEstimator(estimator *estimator) *EstimatorMerge {
 	if len(estimator.groupBy) != 0 {
 		panic("BUG: do not use this function for estimator with non-empty groupBy")
 	}
@@ -562,28 +598,45 @@ func (em *estimatorMerge) fromGlobalEstimator(estimator *estimator) *estimatorMe
 	formatBuf = append(formatBuf, eb0.metricPrefix...)
 	formatBuf = append(formatBuf, `,group_by_keys="__global__"} `...)
 
-	em.sketches[string(formatBuf)] = resSK.Clone()
+	em.Sketches[string(formatBuf)] = resSK.Clone()
 
 	return em
 }
 
-func (em *estimatorMerge) merge(other *estimatorMerge) {
-	for name, sketch := range other.sketches {
-		if existing, ok := em.sketches[name]; ok {
+func (em *EstimatorMerge) merge(other *EstimatorMerge) {
+	for name, sketch := range other.Sketches {
+		if existing, ok := em.Sketches[name]; ok {
 			existing.Merge(sketch)
 		} else {
-			em.sketches[name] = sketch.Clone()
+			em.Sketches[name] = sketch.Clone()
 		}
 	}
 }
 
-func (em *estimatorMerge) writeMetrics(w io.Writer) {
+func (em *EstimatorMerge) writeMetrics(w io.Writer) {
 	formatBuf := make([]byte, 0, 1024)
-	for name, sketch := range em.sketches {
+	for name, sketch := range em.Sketches {
 		formatBuf = formatBuf[:0]
 		formatBuf = append(formatBuf, name...)
 		formatBuf = strconv.AppendUint(formatBuf, sketch.Estimate(), 10)
 		formatBuf = append(formatBuf, "\n"...)
 		w.Write(formatBuf)
 	}
+}
+
+func mustNewGroupRejectSketch() *hyperloglog.Sketch {
+	return mustNewSketch(10, true)
+}
+
+func mustNewSketch(precision uint8, sparse bool) *hyperloglog.Sketch {
+	sk, err := hyperloglog.NewSketch(precision, sparse)
+	if err != nil {
+		panic(fmt.Sprintf("cannot create HLL sketch with precision=%d and sparse=%v: %s", precision, sparse, err))
+	}
+
+	return sk
+}
+
+func hash(v []byte) uint64 {
+	return metro.Hash64(v, 1337)
 }

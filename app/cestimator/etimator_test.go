@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"net/http/httptest"
 	"sort"
 	"strings"
 	"testing"
@@ -599,7 +600,7 @@ cardinality_estimate{interval="10m0s",group_by_keys="foo",group_by_values="a2",b
 func TestEstimatorMerge(t *testing.T) {
 
 	t.Run("global", func(t *testing.T) {
-		estimator, err := newEstimator(EstimatorConfig{Interval: time.Hour})
+		e, err := newEstimator(EstimatorConfig{Interval: time.Hour})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -609,9 +610,9 @@ func TestEstimatorMerge(t *testing.T) {
 		for i := 0; i < 1000; i++ {
 			tss = append(tss, protoparser.TimeSerie{Fingerprint: hash([]byte(fmt.Sprintf("%d", i)))})
 		}
-		estimator.insertMany(tss)
+		e.insertMany(tss)
 
-		merge := (&estimatorMerge{sketches: make(map[string]*hyperloglog.Sketch)}).fromGlobalEstimator(estimator)
+		merge := (&EstimatorMerge{Sketches: make(map[string]*hyperloglog.Sketch)}).fromGlobalEstimator(e)
 
 		t.Run("expect", func(t *testing.T) {
 			b := bytes.NewBuffer(nil)
@@ -620,28 +621,48 @@ func TestEstimatorMerge(t *testing.T) {
 			assert.Equal(t, `cardinality_estimate{interval="1h0m0s",group_by_keys="__global__"} 1000`+"\n", b.String())
 		})
 
-		t.Run("mergeWithGlobal", func(t *testing.T) {
+		t.Run("mergeWithOtherGlobal", func(t *testing.T) {
 			estimator2, err := newEstimator(EstimatorConfig{Interval: time.Hour})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			// insert 1500 tss, 500 of which do not overlap with the first estimator
+			// insert 1100 tss, 100 of which do not overlap with the first estimator
 			tss2 := []protoparser.TimeSerie{}
-			for i := 0; i < 1501; i++ {
+			for i := 0; i < 1100; i++ {
 				tss2 = append(tss2, protoparser.TimeSerie{Fingerprint: hash([]byte(fmt.Sprintf("%d", i)))})
 			}
 			estimator2.insertMany(tss2)
 
-			merge2 := (&estimatorMerge{sketches: make(map[string]*hyperloglog.Sketch)}).fromGlobalEstimator(estimator2)
+			merge2 := (&EstimatorMerge{Sketches: make(map[string]*hyperloglog.Sketch)}).fromGlobalEstimator(estimator2)
 
-			merge.merge(merge2)
+			merge2.merge(merge)
 
 			b := bytes.NewBuffer(nil)
-			merge.writeMetrics(b)
+			merge2.writeMetrics(b)
 
-			assert.Equal(t, `cardinality_estimate{interval="1h0m0s",group_by_keys="__global__"} 1500`+"\n", b.String())
+			assert.Equal(t, `cardinality_estimate{interval="1h0m0s",group_by_keys="__global__"} 1100`+"\n", b.String())
+
+		})
+
+		t.Run("stream", func(t *testing.T) {
+			resp := httptest.NewRecorder()
+
+			// stream to
+			EstimatorMergeWriteStreamHandler([]*estimator{e}, resp, httptest.NewRequest("GET", "/clusternative/query", nil))
+
+			// read from stream
+			em := &EstimatorMerge{Sketches: make(map[string]*hyperloglog.Sketch)}
+			EstimatorMergeReadStreamHandler(em, resp.Result())
+
+			b := bytes.NewBuffer(nil)
+			em.writeMetrics(b)
+
+			assert.Equal(t, `cardinality_estimate{interval="1h0m0s",group_by_keys="__global__"} 1000`+"\n", b.String())
 		})
 	})
 
+	t.Run("buckets", func(t *testing.T) {
+
+	})
 }
