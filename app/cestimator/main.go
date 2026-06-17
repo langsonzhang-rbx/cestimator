@@ -98,7 +98,7 @@ func main() {
 			w.WriteHeader(http.StatusNoContent)
 			return true
 		case "/clusternative/query":
-
+			estimatorMergeWriteStreamHandler(estimators, w, r)
 			return true
 		case "/reset":
 			for _, e := range estimators {

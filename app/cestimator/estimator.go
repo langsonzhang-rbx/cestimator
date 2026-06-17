@@ -536,6 +536,8 @@ func estimatorMergeWriteStreamHandler(estimators []*estimator, w http.ResponseWr
 			}
 		}
 	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 func estimatorMergeReadStreamHandler(em *estimatorMerge, resp *http.Response) {
