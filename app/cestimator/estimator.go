@@ -540,6 +540,7 @@ func estimatorMergeWriteStreamHandler(estimators []*estimator, w http.ResponseWr
 	w.WriteHeader(http.StatusOK)
 }
 
+// estimatorMergeReadStreamHandler reads a stream of gob-encoded EstimatorMerge objects from the response and merges them into the provided estimatorMerge object.
 func estimatorMergeReadStreamHandler(em *estimatorMerge, resp *http.Response) {
 	defer resp.Body.Close()
 	decoder := gob.NewDecoder(resp.Body)
