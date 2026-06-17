@@ -492,12 +492,18 @@ type groupSketch struct {
 	*hyperloglog.Sketch
 }
 
-type EstimatorMerge struct {
+type estimatorMerge struct {
 	Sketches map[string]*hyperloglog.Sketch
 }
 
+func newEstimatorMerge() *estimatorMerge {
+	return &estimatorMerge{
+		Sketches: make(map[string]*hyperloglog.Sketch),
+	}
+}
+
 // estimatorMergeStreamHandler writes all sketches from all estimators to the response as a stream of gob-encoded EstimatorMerge objects.
-func EstimatorMergeWriteStreamHandler(estimators []*estimator, w http.ResponseWriter, r *http.Request) {
+func estimatorMergeWriteStreamHandler(estimators []*estimator, w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Transfer-Encoding", "chunked")
 
@@ -507,14 +513,14 @@ func EstimatorMergeWriteStreamHandler(estimators []*estimator, w http.ResponseWr
 	}
 
 	encoder := gob.NewEncoder(w)
-	streamGob := func(em *EstimatorMerge) {
+	streamGob := func(em *estimatorMerge) {
 		if err := encoder.Encode(em); err != nil {
 			logger.Panicf("BUG: Encoding error: %v\n", err)
 		}
 		flusher.Flush()
 	}
 
-	em := &EstimatorMerge{
+	em := &estimatorMerge{
 		Sketches: make(map[string]*hyperloglog.Sketch),
 	}
 	for _, e := range estimators {
@@ -532,11 +538,11 @@ func EstimatorMergeWriteStreamHandler(estimators []*estimator, w http.ResponseWr
 	}
 }
 
-func EstimatorMergeReadStreamHandler(em *EstimatorMerge, resp *http.Response) {
+func estimatorMergeReadStreamHandler(em *estimatorMerge, resp *http.Response) {
 	defer resp.Body.Close()
 	decoder := gob.NewDecoder(resp.Body)
 	for {
-		var receivedEm EstimatorMerge
+		var receivedEm estimatorMerge
 		if err := decoder.Decode(&receivedEm); err != nil {
 			if err == io.EOF {
 				break
@@ -547,7 +553,7 @@ func EstimatorMergeReadStreamHandler(em *EstimatorMerge, resp *http.Response) {
 	}
 }
 
-func (em *EstimatorMerge) fromEstimatorBucket(estimator *estimator, bucket int) *EstimatorMerge {
+func (em *estimatorMerge) fromEstimatorBucket(estimator *estimator, bucket int) *estimatorMerge {
 	if bucket < 0 || bucket >= len(estimator.buckets) {
 		panic(fmt.Sprintf("BUG: bucket is out of range, bucket=%d, buckets_num=%d", bucket, len(estimator.buckets)))
 	}
@@ -581,7 +587,7 @@ func (em *EstimatorMerge) fromEstimatorBucket(estimator *estimator, bucket int) 
 	return em
 }
 
-func (em *EstimatorMerge) fromGlobalEstimator(estimator *estimator) *EstimatorMerge {
+func (em *estimatorMerge) fromGlobalEstimator(estimator *estimator) *estimatorMerge {
 	if len(estimator.groupBy) != 0 {
 		panic("BUG: do not use this function for estimator with non-empty groupBy")
 	}
@@ -603,7 +609,7 @@ func (em *EstimatorMerge) fromGlobalEstimator(estimator *estimator) *EstimatorMe
 	return em
 }
 
-func (em *EstimatorMerge) merge(other *EstimatorMerge) {
+func (em *estimatorMerge) merge(other *estimatorMerge) {
 	for name, sketch := range other.Sketches {
 		if existing, ok := em.Sketches[name]; ok {
 			existing.Merge(sketch)
@@ -613,7 +619,7 @@ func (em *EstimatorMerge) merge(other *EstimatorMerge) {
 	}
 }
 
-func (em *EstimatorMerge) writeMetrics(w io.Writer) {
+func (em *estimatorMerge) writeMetrics(w io.Writer) {
 	formatBuf := make([]byte, 0, 1024)
 	for name, sketch := range em.Sketches {
 		formatBuf = formatBuf[:0]

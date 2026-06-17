@@ -612,7 +612,7 @@ func TestEstimatorMerge(t *testing.T) {
 		}
 		e.insertMany(tss)
 
-		merge := (&EstimatorMerge{Sketches: make(map[string]*hyperloglog.Sketch)}).fromGlobalEstimator(e)
+		merge := newEstimatorMerge().fromGlobalEstimator(e)
 
 		t.Run("expect", func(t *testing.T) {
 			b := bytes.NewBuffer(nil)
@@ -634,7 +634,7 @@ func TestEstimatorMerge(t *testing.T) {
 			}
 			estimator2.insertMany(tss2)
 
-			merge2 := (&EstimatorMerge{Sketches: make(map[string]*hyperloglog.Sketch)}).fromGlobalEstimator(estimator2)
+			merge2 := (&estimatorMerge{Sketches: make(map[string]*hyperloglog.Sketch)}).fromGlobalEstimator(estimator2)
 
 			merge2.merge(merge)
 
@@ -649,11 +649,11 @@ func TestEstimatorMerge(t *testing.T) {
 			resp := httptest.NewRecorder()
 
 			// stream to
-			EstimatorMergeWriteStreamHandler([]*estimator{e}, resp, httptest.NewRequest("GET", "/clusternative/query", nil))
+			estimatorMergeWriteStreamHandler([]*estimator{e}, resp, httptest.NewRequest("GET", "/clusternative/query", nil))
 
 			// read from stream
-			em := &EstimatorMerge{Sketches: make(map[string]*hyperloglog.Sketch)}
-			EstimatorMergeReadStreamHandler(em, resp.Result())
+			em := &estimatorMerge{Sketches: make(map[string]*hyperloglog.Sketch)}
+			estimatorMergeReadStreamHandler(em, resp.Result())
 
 			b := bytes.NewBuffer(nil)
 			em.writeMetrics(b)
@@ -663,6 +663,80 @@ func TestEstimatorMerge(t *testing.T) {
 	})
 
 	t.Run("buckets", func(t *testing.T) {
+		e, err := newEstimator(EstimatorConfig{Interval: time.Hour, GroupBy: []string{"foo"}, Buckets: 10})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		defer e.stop()
 
+		// insert 1000 tss
+		tss := []protoparser.TimeSerie{}
+		for i := 0; i < 500; i++ {
+			tss = append(tss, protoparser.TimeSerie{
+				Fingerprint: hash([]byte(fmt.Sprintf("%d", i))),
+				GroupLabels: []protoparser.Label{{Name: "foo", Value: "group1"}},
+			})
+			tss = append(tss, protoparser.TimeSerie{
+				Fingerprint: hash([]byte(fmt.Sprintf("%d", i))),
+				GroupLabels: []protoparser.Label{{Name: "foo", Value: "group2"}},
+			})
+		}
+		e.insertMany(tss)
+
+		merge := newEstimatorMerge()
+		for i := range e.buckets {
+			merge.merge(newEstimatorMerge().fromEstimatorBucket(e, i))
+		}
+
+		t.Run("expect", func(t *testing.T) {
+			b := bytes.NewBuffer(nil)
+			merge.writeMetrics(b)
+
+			assert.Contains(t, b.String(), `cardinality_estimate{interval="1h0m0s",group_by_keys="foo",group_by_values="group1",by_foo="group1"} 500`)
+			assert.Contains(t, b.String(), `cardinality_estimate{interval="1h0m0s",group_by_keys="foo",group_by_values="group2",by_foo="group2"} 500`)
+		})
+
+		t.Run("mergeWithOtherBucket", func(t *testing.T) {
+			estimator2, err := newEstimator(EstimatorConfig{Interval: time.Hour, GroupBy: []string{"foo"}, Buckets: 1})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			defer estimator2.stop()
+
+			// insert 1100 tss with overlap
+			tss2 := []protoparser.TimeSerie{}
+			for i := 0; i < 1100; i++ {
+				tss2 = append(tss2, protoparser.TimeSerie{
+					Fingerprint: hash([]byte(fmt.Sprintf("%d", i))),
+					GroupLabels: []protoparser.Label{{Name: "foo", Value: "group1"}},
+				})
+			}
+			estimator2.insertMany(tss2)
+
+			merge2 := (&estimatorMerge{Sketches: make(map[string]*hyperloglog.Sketch)}).fromEstimatorBucket(estimator2, 0)
+
+			merge2.merge(merge)
+
+			b := bytes.NewBuffer(nil)
+			merge2.writeMetrics(b)
+
+			assert.Contains(t, b.String(), `cardinality_estimate{interval="1h0m0s",group_by_keys="foo",group_by_values="group1",by_foo="group1"} 1100`)
+			assert.Contains(t, b.String(), `cardinality_estimate{interval="1h0m0s",group_by_keys="foo",group_by_values="group2",by_foo="group2"} 500`)
+		})
+
+		t.Run("stream", func(t *testing.T) {
+			resp := httptest.NewRecorder()
+
+			estimatorMergeWriteStreamHandler([]*estimator{e}, resp, httptest.NewRequest("GET", "/clusternative/query", nil))
+
+			em := &estimatorMerge{Sketches: make(map[string]*hyperloglog.Sketch)}
+			estimatorMergeReadStreamHandler(em, resp.Result())
+
+			b := bytes.NewBuffer(nil)
+			em.writeMetrics(b)
+
+			assert.Contains(t, b.String(), `cardinality_estimate{interval="1h0m0s",group_by_keys="foo",group_by_values="group1",by_foo="group1"} 500`)
+			assert.Contains(t, b.String(), `cardinality_estimate{interval="1h0m0s",group_by_keys="foo",group_by_values="group2",by_foo="group2"} 500`)
+		})
 	})
 }
